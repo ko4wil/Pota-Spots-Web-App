@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>POTA Spots – Mobile</title>
+  <style>
+    :root {
+      --bg: #0b0c10; --card:#15171c; --text:#e6e9ef; --muted:#a1a8b3; --accent:#23c55e; --chip:#23262d;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,Arial,sans-serif;background:var(--bg);color:var(--text)}
+    header{position:sticky;top:0;z-index:5;background:linear-gradient(180deg,var(--bg),rgba(11,12,16,.8));backdrop-filter:blur(6px);}
+    .wrap{max-width:1100px;margin:0 auto;padding:10px 12px}
+    h1{margin:6px 0 10px;font-size:20px;letter-spacing:.2px}
+    .controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+    @media (max-width:720px){.controls{grid-template-columns:1fr 1fr}.controls .wide{grid-column:1/-1}}
+    @media (max-width:460px){.controls{grid-template-columns:1fr}.controls .wide{grid-column:1}}
+    select,input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid #2b2f36;background:#0f1115;color:var(--text);outline:none}
+    input::placeholder{color:#6b7280}
+    .toolbar{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+    .btn{padding:8px 12px;border:1px solid #30343b;background:#13161c;border-radius:12px;color:var(--text);cursor:pointer}
+    .btn:hover{border-color:#3b4048}
+    .pill{background:var(--chip);padding:4px 8px;border-radius:999px;font-size:12px;color:var(--muted)}
+    .counter{margin-left:auto}
+
+    main{padding:10px 12px}
+    .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+    @media (max-width:1000px){.grid{grid-template-columns:1fr 1fr}}
+    @media (max-width:680px){.grid{grid-template-columns:1fr}}
+
+    .card{background:var(--card);border:1px solid #23262d;border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:8px}
+    .toprow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .callsign{font-weight:700;font-size:16px}
+    .freq{font-family:ui-monospace,Consolas,monospace;color:var(--accent)}
+    .meta{display:flex;gap:8px;flex-wrap:wrap}
+    .chip{background:var(--chip);border:1px solid #2c3036;border-radius:999px;padding:4px 8px;font-size:12px;color:var(--muted)}
+    .park{font-weight:600}
+    .footer{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+    .dot{width:6px;height:6px;border-radius:999px;background:var(--accent);display:inline-block}
+    .empty{color:var(--muted);text-align:center;padding:40px 10px}
+    a{color:#8ab4ff;text-decoration:none}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Parks on the Air – Live Spots</h1>
+      <div class="controls">
+        <select id="mode">
+          <option value="">All modes</option>
+        </select>
+        <select id="band">
+          <option value="">All bands</option>
+        </select>
+        <input id="park" class="wide" type="text" placeholder="Filter by park (e.g., K-1234) or park name" />
+      </div>
+      <div class="toolbar">
+        <button id="refresh" class="btn" aria-label="Refresh">Refresh</button>
+        <label style="display:flex;align-items:center;gap:6px" title="Auto-refresh every 30 s">
+          <input id="autorefresh" type="checkbox" /> Auto
+        </label>
+        <span id="status" class="pill">Idle</span>
+        <span id="last" class="pill">Last update: —</span>
+        <span id="count" class="pill counter">0 shown</span>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="wrap">
+      <div id="list" class="grid" role="list"></div>
+      <div id="empty" class="empty" hidden>No matches</div>
+    </div>
+  </main>
+
+<script>
+(() => {
+  const API = 'https://api.pota.app/spot/activator'; // Public POTA spot API
+  const els = {
+    mode: document.getElementById('mode'),
+    band: document.getElementById('band'),
+    park: document.getElementById('park'),
+    list: document.getElementById('list'),
+    empty: document.getElementById('empty'),
+    status: document.getElementById('status'),
+    last: document.getElementById('last'),
+    count: document.getElementById('count'),
+    refresh: document.getElementById('refresh'),
+    autorefresh: document.getElementById('autorefresh'),
+  };
+
+  // State
+  let spots = [];
+  const state = {
+    mode: localStorage.getItem('f_mode') || '',
+    band: localStorage.getItem('f_band') || '',
+    park: localStorage.getItem('f_park') || '',
+    auto: localStorage.getItem('f_auto') === '1',
+  };
+
+  // Helpers
+  const uniq = (arr) => [...new Set(arr)].filter(Boolean).sort((a,b)=>a.localeCompare(b, undefined, {numeric:true}));
+  const fmtTimeAgo = (iso) => {
+    const d = new Date(iso);
+    const diff = Math.max(0, Date.now() - d.getTime());
+    const s = Math.floor(diff/1000);
+    if (s < 60) return s + 's ago';
+    const m = Math.floor(s/60); if (m<60) return m+'m ago';
+    const h = Math.floor(m/60); if (h<24) return h+'h ago';
+    const days = Math.floor(h/24); return days+'d ago';
+  };
+  const norm = (v='') => (v||'').toString().trim().toLowerCase();
+
+  function saveFilters(){
+    localStorage.setItem('f_mode', state.mode);
+    localStorage.setItem('f_band', state.band);
+    localStorage.setItem('f_park', state.park);
+    localStorage.setItem('f_auto', state.auto ? '1' : '0');
+  }
+
+  function applyFilters(){
+    const m = norm(state.mode);
+    const b = norm(state.band);
+    const p = norm(state.park);
+    const filtered = spots.filter(s => {
+      const mode = norm(s.mode);
+      const band = norm(s.band);
+      const park = norm(s.parkId) + ' ' + norm(s.parkName||'');
+      return (!m || mode === m) && (!b || band === b) && (!p || park.includes(p));
+    });
+    renderList(filtered);
+  }
+
+  function renderList(items){
+    els.list.innerHTML = '';
+    if (!items.length){ els.empty.hidden = false; els.count.textContent = '0 shown'; return; }
+    els.empty.hidden = true;
+    const frag = document.createDocumentFragment();
+    for (const s of items){
+      const card = document.createElement('article');
+      card.className = 'card';
+      card.setAttribute('role','listitem');
+      card.innerHTML = `
+        <div class="toprow">
+          <span class="callsign">${s.activator || s.activatorCallsign || '—'}</span>
+          <span class="freq">${s.frequency ? Number(s.frequency).toFixed(3) + ' MHz' : ''}</span>
+        </div>
+        <div class="meta">
+          <span class="chip">Mode: ${s.mode || '—'}</span>
+          <span class="chip">Band: ${s.band || '—'}</span>
+          <span class="chip">DX: ${s.dx ? 'Yes' : 'No'}</span>
+        </div>
+        <div>
+          <span class="park">${s.parkId || ''}</span>
+          <span class="" style="color:var(--muted)">• ${s.parkName || ''}</span>
+        </div>
+        <div class="footer">
+          <span class="dot" aria-hidden="true"></span>
+          <span title="${s.spotTime || s.time}">${fmtTimeAgo(s.spotTime || s.time)}</span>
+          <span>•</span>
+          <span>${s.owner || s.source || 'POTA'}</span>
+          ${s.frequency ? `<span>•</span><span>${(s.comments||'').replace(/</g,'&lt;')}</span>` : ''}
+        </div>
+      `;
+      frag.appendChild(card);
+    }
+    els.list.appendChild(frag);
+    els.count.textContent = items.length + ' shown';
+  }
+
+  function populateFilters(spots){
+    const modes = uniq(spots.map(s => s.mode));
+    const bands = uniq(spots.map(s => s.band));
+
+    // Modes
+    els.mode.innerHTML = '<option value="">All modes</option>' + modes.map(m=>`<option value="${m}">${m}</option>`).join('');
+    els.mode.value = state.mode;
+
+    // Bands
+    els.band.innerHTML = '<option value="">All bands</option>' + bands.map(b=>`<option value="${b}">${b}</option>`).join('');
+    els.band.value = state.band;
+
+    // Park text
+    els.park.value = state.park;
+  }
+
+  async function fetchSpots(){
+    els.status.textContent = 'Loading…';
+    try{
+      const res = await fetch(API, { cache: 'no-store' });
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      const data = await res.json();
+      // Normalize field names between historical and current API formats
+      spots = (Array.isArray(data)?data:[]).map(s=>{
+        // derive grid if not provided and we have lat/lon
+        const lat = s.latitude ?? s.lat ?? s.latDeg ?? null;
+        const lon = s.longitude ?? s.lon ?? s.lonDeg ?? null;
+        const gridFromLL = (lat!=null && lon!=null) ? maidenhead(lat, lon, 6) : undefined;
+        return ({
+          activator: s.activator || s.activatorCallsign || s.callsign || s.callSign,
+          frequency: s.frequency || s.freq,
+          mode: s.mode,
+          band: s.band,
+          dx: !!(s.dx || s.isDx),
+          parkId: s.park || s.parkId || s.reference,
+          parkName: s.parkName || s.parkname,
+          grid: s.grid || s.gridSquare || s.gridsquare || gridFromLL,
+          comments: s.comments || s.comment || '',
+          spotTime: s.spotTime || s.time || s.createdAt || s.timestamp,
+          owner: s.source || s.spottedBy || s.owner || 'POTA',
+        });
+      });
+      if (!els.mode.options.length || els.mode.options.length === 1) populateFilters(spots);
+      applyFilters();
+      els.last.textContent = 'Last update: ' + new Date().toLocaleTimeString();
+      els.status.textContent = 'Live';
+    }catch(err){
+      console.error(err);
+      els.status.textContent = 'Error';
+    }
+  }
+
+  // Wire up controls
+  els.mode.addEventListener('change', e => { state.mode = e.target.value; saveFilters(); applyFilters(); });
+  els.band.addEventListener('change', e => { state.band = e.target.value; saveFilters(); applyFilters(); });
+  let parkDebounce; els.park.addEventListener('input', e => {
+    clearTimeout(parkDebounce);
+    parkDebounce = setTimeout(()=>{ state.park = e.target.value; saveFilters(); applyFilters(); }, 200);
+  });
+  els.refresh.addEventListener('click', fetchSpots);
+
+  let timer = null;
+  function setAuto(v){
+    state.auto = v; saveFilters();
+    if (timer){ clearInterval(timer); timer = null; }
+    if (v){ timer = setInterval(fetchSpots, 30000); }
+  }
+  els.autorefresh.checked = state.auto; setAuto(state.auto);
+  els.autorefresh.addEventListener('change', e => setAuto(e.target.checked));
+
+  // First load
+  fetchSpots();
+})();
+</script>
+</body>
+</html>
